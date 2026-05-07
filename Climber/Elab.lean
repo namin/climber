@@ -1,87 +1,103 @@
 /-
-  Elaborate an LLM-proposed `(Formula, soundness proof)` pair by
-  delegating to Lean itself.
+  Elaborate an LLM-proposed `SoundExtension` term — and optionally a
+  *strictness witness* — by delegating to Lean.
 
-  The LLM proposes:
-    - a closed `Formula` term (the candidate axiom);
-    - a Lean proof term of `∀ env, Formula.interp env <formula>`
-      (the soundness certificate).
+  Two wrappers, two checks:
 
-  We splice both into a wrapper file:
+  1. **Extension wrapper.** Splices the LLM's `SoundExtension` term
+     into a file that defines `proposalExtension`, builds
+     `cascadeT₁ := Theory.base.extend proposalExtension`. If the
+     wrapper compiles, the kernel verified the `sound` field —
+     soundness of the extension is established.
 
-      import Climber
-      open Climber
-      def proposalFormula : Formula := <FORMULA>
-      theorem proposalSound (env : String → Prop) :
-          Formula.interp env proposalFormula := <PROOF>
-      ... cascade boilerplate ...
-      def main : IO Unit := IO.println "ADMITTED-FORMULA ..."
+  2. **Strictness wrapper.** In addition to the extension, splices a
+     proof of the existential
 
-  …and run it via `lake env lean --run`.
+       ∃ (φ : Formula) (env : String → H3) (provVal : Formula → H3),
+         proposalExtension.schema φ ∧
+         Formula.heyting env provVal φ ≠ H3.top
 
-  If the wrapper compiles, both the formula and the soundness proof
-  passed the kernel — the SoundExtension can be constructed and the
-  candidate enters T₁. If the wrapper fails to compile, the kernel
-  refused: either the formula didn't elaborate or the proof didn't
-  type-check (i.e., the formula isn't actually metalanguage-true).
-  The Lean diagnostic is fed back to the LLM for retry.
+     If this compiles, the kernel verified that *some instance
+     admitted by the schema is H3-invalid* — and therefore not
+     T₀-derivable (`Derivable₀.h3Valid`). The climb genuinely
+     extends T₀.
 
-  This is the LCF discipline at the climb's gate: the kernel is the
-  arbiter, the LLM is constrained to the proposer side. Splicing
-  Lean source and running `lake env lean --run` is **not** itself
-  a security boundary — the proposal is trusted not to abuse Lean
-  elaboration-time effects (see `GOTCHAS.md` style notes in
-  lean-green for the corresponding analysis there).
+  Outcomes: `ELAB-ERROR` (the extension wrapper failed),
+  `ADMITTED` (extension passes, strictness fails or absent), or
+  `ADMITTED-STRICT` (both pass).
+
+  This is the LCF discipline at the climb's gate, with a second
+  optional gate for strictness. Splicing Lean source and running
+  `lake env lean --run` is **not** itself a security boundary.
 -/
 
 import Climber.Climb
+import Climber.Counter
 
 namespace Climber.Elab
 
 inductive Result where
-  | elabError (msg : String)
+  | elabError      (msg : String)
   | admitted
+  | admittedStrict
   deriving Repr
 
 def Result.isAdmitted : Result → Bool
-  | .admitted => true
-  | _ => false
+  | .admitted        => true
+  | .admittedStrict  => true
+  | _                => false
+
+def Result.isStrict : Result → Bool
+  | .admittedStrict  => true
+  | _                => false
 
 instance : ToString Result where
   toString
-    | .elabError m => s!"ELAB-ERROR: {m}"
-    | .admitted    => "ADMITTED"
+    | .elabError m     => s!"ELAB-ERROR: {m}"
+    | .admitted        => "ADMITTED"
+    | .admittedStrict  => "ADMITTED-STRICT"
 
 structure Config where
-  wrapperPath : String := "/tmp/climber-cascade-check.lean"
+  wrapperPath       : String := "/tmp/climber-extension-check.lean"
+  strictWrapperPath : String := "/tmp/climber-strictness-check.lean"
   /-- Working directory for the spawned `lake`. Must contain `lakefile.lean`. -/
-  workingDir  : Option String := none
+  workingDir        : Option String := none
 
 def defaultConfig : Config := {}
 
-private def buildWrapper (formulaSrc : String) (proofSrc : String) : String :=
+private def buildExtensionWrapper (extensionSrc : String) : String :=
   s!"import Climber
 
 open Climber
 
-abbrev proposalFormula : Formula :=
-{formulaSrc}
-
-theorem proposalSound : ∀ env : String → Prop, Formula.interp env proposalFormula :=
-{proofSrc}
-
-def proposalExtension : SoundExtension where
-  schema := fun ψ => ψ = proposalFormula
-  sound  := fun ψ env h => h ▸ proposalSound env
+def proposalExtension : SoundExtension :=
+{extensionSrc}
 
 def cascadeT₁ : Theory := Theory.base.extend proposalExtension
 
-theorem cascadeT₁_derives_proposal : derives cascadeT₁ proposalFormula :=
-  derives.extra proposalExtension proposalFormula
-    (by simp [cascadeT₁, Theory.extend, Theory.base]) rfl
-
 def main : IO Unit :=
   IO.println \"ADMITTED\"
+"
+
+private def buildStrictnessWrapper (extensionSrc : String) (strictSrc : String) :
+    String :=
+  s!"import Climber
+
+open Climber
+
+def proposalExtension : SoundExtension :=
+{extensionSrc}
+
+def cascadeT₁ : Theory := Theory.base.extend proposalExtension
+
+theorem proposalStrict :
+    ∃ (φ : Formula) (env : String → H3) (provVal : Formula → H3),
+      proposalExtension.schema φ ∧
+      Formula.heyting env provVal φ ≠ H3.top :=
+{strictSrc}
+
+def main : IO Unit :=
+  IO.println \"ADMITTED-STRICT\"
 "
 
 private def runWrapper (path : String) (workingDir : Option String) :
@@ -93,15 +109,33 @@ private def runWrapper (path : String) (workingDir : Option String) :
   }
   return (out.exitCode == 0, out.stdout, out.stderr)
 
-/-- Elaborate the LLM's proposal, run the wrapper, parse the verdict. -/
-def checkProposal (cfg : Config) (formulaSrc : String) (proofSrc : String) :
-    IO Result := do
-  IO.FS.writeFile cfg.wrapperPath (buildWrapper formulaSrc proofSrc)
-  let (ok, stdout, stderr) ← runWrapper cfg.wrapperPath cfg.workingDir
-  if !ok then return .elabError (stdout ++ stderr).trimAscii.toString
-  let lines := stdout.splitOn "\n"
-  if lines.any (·.trimAscii.toString == "ADMITTED") then
-    return .admitted
-  return .elabError s!"unexpected wrapper output:\n{stdout}"
+private def linesContain (output : String) (marker : String) : Bool :=
+  (output.splitOn "\n").any (·.trimAscii.toString == marker)
+
+/-- Elaborate the LLM's proposal and (optionally) its strictness
+    witness. Tries the strictness wrapper first; on failure, falls
+    back to the extension-only wrapper. -/
+def checkProposal (cfg : Config)
+    (extensionSrc : String) (strictSrc : Option String) : IO Result := do
+  -- Try strictness first if a witness was supplied.
+  match strictSrc with
+  | some s =>
+    IO.FS.writeFile cfg.strictWrapperPath
+      (buildStrictnessWrapper extensionSrc s)
+    let (sok, sout, _) ← runWrapper cfg.strictWrapperPath cfg.workingDir
+    if sok && linesContain sout "ADMITTED-STRICT" then
+      return .admittedStrict
+    -- strictness failed; fall through to extension-only check
+    IO.FS.writeFile cfg.wrapperPath (buildExtensionWrapper extensionSrc)
+    let (eok, eout, eerr) ← runWrapper cfg.wrapperPath cfg.workingDir
+    if eok && linesContain eout "ADMITTED" then
+      return .admitted
+    return .elabError (eout ++ eerr).trimAscii.toString
+  | none =>
+    IO.FS.writeFile cfg.wrapperPath (buildExtensionWrapper extensionSrc)
+    let (eok, eout, eerr) ← runWrapper cfg.wrapperPath cfg.workingDir
+    if eok && linesContain eout "ADMITTED" then
+      return .admitted
+    return .elabError (eout ++ eerr).trimAscii.toString
 
 end Climber.Elab

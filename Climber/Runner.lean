@@ -2,22 +2,29 @@
   An LLM/Lean cascade over the climber's gate.
 
   Each round:
-    1. Prompt Bedrock for a FORMULA (a closed `Formula` term)
-       and a PROOF (a Lean term of type
-       `∀ env, Formula.interp env <FORMULA>`).
-    2. Splice both into a wrapper file, run `checkProposal`. The
-       wrapper imports Climber, defines `proposalExtension` from the
-       pair, builds `cascadeT₁ := Theory.base.extend proposalExtension`,
-       and proves `derives cascadeT₁ proposalFormula`.
-    3. Outcome: `.admitted` (kernel checked the soundness proof and
-       T₁ derives the new formula) or `.elabError` (kernel refused
-       at any stage, with the Lean diagnostic).
-    4. On elab error, retry up to `maxRetries` times with the
-       diagnostic fed back into the prompt.
+    1. Prompt Bedrock for an EXTENSION (a `SoundExtension` term) and
+       a STRICTNESS proof (an existential
+       `∃ φ env provVal, schema φ ∧ heyting env provVal φ ≠ H3.top`).
+    2. Run two checks:
+       - **Soundness gate**: the extension must elaborate (its
+         `sound` field type-checks against the metalanguage interp).
+       - **Strictness gate**: the strictness proof must elaborate
+         (the kernel verified some admitted instance is H3-invalid,
+         hence not T₀-derivable).
+    3. Outcome: `.admittedStrict` (both gates pass — the climb
+       genuinely climbs), `.admitted` (only soundness — the
+       extension is sound but the proposal didn't strictly extend
+       T₀), or `.elabError` (the soundness gate failed).
+    4. After each non-error round, the runner regenerates
+       `Climbed.lean` containing the accumulated extensions and the
+       composite theory `T_climbed`. The user can run
+       `lake env lean Climbed.lean` to confirm that a kernel-checked
+       climbed theory has been left behind.
 
-  The kernel discipline is direct: the soundness proof is checked
-  by Lean's kernel; admission and "T₁ derives the candidate" are
-  consequences of the proof type-checking.
+  The cascade is the climb made interactive — the proposer offers
+  schemas with metalanguage soundness certificates; the kernel
+  admits or refuses; admitted schemas accumulate into a
+  kernel-buildable composite theory.
 -/
 
 import Climber.Bedrock
@@ -26,12 +33,14 @@ import Climber.Elab
 namespace Climber.Runner
 
 structure RoundResult where
-  formulaSrc : String
-  proofSrc   : String
-  outcome    : Climber.Elab.Result
+  extensionSrc : String
+  strictSrc    : Option String
+  outcome      : Climber.Elab.Result
 
 structure Config where
-  maxRetries : Nat := 1
+  maxRetries     : Nat    := 1
+  /-- Path the runner writes the accumulated climbed theory to. -/
+  climbedPath    : String := "Climbed.lean"
 
 def defaultConfig : Config := {}
 
@@ -46,7 +55,8 @@ def extractSection (header : String) (raw : String) : String :=
       if l.trimAscii.toString == header then
         collect true acc rest
       else if taking && l.trimAscii.toString.endsWith ":" &&
-              (l.trimAscii.toString.toList.all (fun c => c.isUpper || c == ':' || c == ' ')) then
+              (l.trimAscii.toString.toList.all
+                  (fun c => c.isUpper || c == ':' || c == ' ')) then
         acc.reverse
       else if taking then
         collect true (l :: acc) rest
@@ -66,16 +76,24 @@ def fixFirstLineIndent (src : String) : String :=
     else src
   | _ => src
 
+/-- Treat empty / placeholder strictness sections as absent. -/
+def normalizeStrictSrc (s : String) : Option String :=
+  let trimmed := s.trimAscii.toString
+  if trimmed.isEmpty || trimmed == "(none)" || trimmed == "none" then
+    none
+  else
+    some (fixFirstLineIndent s)
+
 def buildPrompt (admitted : List String)
     (retry : Option (String × String × String) := none) : String :=
   let admittedSection := if admitted.isEmpty then "" else
-    "\n\nPreviously admitted formulas (don't propose duplicates):\n" ++
+    "\n\nPreviously admitted extensions (don't propose duplicates):\n" ++
     String.intercalate "\n---\n" admitted ++ "\n"
   let retrySection := match retry with
     | none => ""
-    | some (prevF, prevP, err) =>
-      s!"\n\nYour previous attempt was rejected by Lean.\n\nFORMULA:\n{prevF}\n\nPROOF:\n{prevP}\n\nLean's diagnostic:\n{err}\n\nProduce a corrected version.\n"
-  s!"You are proposing a soundness extension to the climber's base theory T₀.
+    | some (prevExt, prevStrict, err) =>
+      s!"\n\nYour previous attempt was rejected by Lean.\n\nEXTENSION:\n{prevExt}\n\nSTRICTNESS:\n{prevStrict}\n\nLean's diagnostic:\n{err}\n\nProduce a corrected version.\n"
+  s!"You are proposing a SoundExtension to the climber's base theory T₀.
 
 T₀ is minimal implicational logic with ⊥-elim:
   - Axiom K:    φ → ψ → φ
@@ -83,82 +101,121 @@ T₀ is minimal implicational logic with ⊥-elim:
   - Axiom ⊥-E:  ⊥ → φ
   - MP:         from φ → ψ and φ infer ψ
 
-T₀ is sound for the standard truth-functional interpretation but
-incomplete: it cannot derive Peirce's law, double-negation
-elimination, the law of excluded middle, or other classical-only
-tautologies.
+T₀ has an inert internal provability constructor `prov : Formula → Formula`,
+interpreted in the metalanguage as `Derivable₀ φ`. T₀ has no rule for
+`prov`; reflection schemas can install rules involving it.
 
-Your job: propose a closed `Formula` that is **classically valid
-but not intuitionistically valid** — i.e., a tautology that T₀
-provably cannot reach — and supply a Lean proof of its
-metalanguage truth. The kernel checks the proof; if admitted, the
-formula enters T₁ as a new sound axiom and the system has climbed
-across an unreachable line.
+Your job: propose a `SoundExtension` whose schema admits new sound
+formulas, and supply a *strictness witness* proving that some
+admitted instance is not T₀-derivable.
 
-Examples of classical-only tautologies you might consider (do NOT
-just propose Peirce's law — vary across rounds):
-- Double-negation elimination: `((φ → ⊥) → ⊥) → φ`
-- Excluded middle (in implicational form):
-  `((φ → ψ) → φ) → φ` (this IS Peirce — already used)
-- `((φ → ⊥) → φ) → φ` (consequentia mirabilis)
-- De Morgan-via-implication patterns
-- `(φ → ψ) → ((φ → ⊥) → ⊥) → ((ψ → ⊥) → ⊥)` etc.
-
-Use `Classical.em` or `by_cases` in the proof — these classical
-tactics are what make the certificate *classical* rather than
-intuitionistic. A proof that goes through without classical
-reasoning is suspicious: it likely means the formula was already
-in T₀ and the climb didn't actually advance.
-
-Data type:
+Data types:
 
   inductive Formula where
-    | bot    : Formula
-    | atom   : String → Formula
-    | imp    : Formula → Formula → Formula
+    | bot   : Formula
+    | atom  : String → Formula
+    | imp   : Formula → Formula → Formula
+    | prov  : Formula → Formula
 
-Interpretation:
+  structure SoundExtension where
+    schema : Formula → Prop
+    sound  : ∀ φ env, schema φ → Formula.interp env φ
 
-  def Formula.interp (env : String → Prop) : Formula → Prop
-    | .bot     => False
-    | .atom a  => env a
-    | .imp φ ψ => interp env φ → interp env ψ
+  -- 3-element Heyting algebra for separating model
+  inductive H3 where | bot | mid | top
 
-The wrapper exposes the goal as `∀ env, Formula.interp env <FORMULA>`
-— begin your proof with `intro env`. To unfold `Formula.interp`, use
-the simp lemmas `Formula.interp_imp`, `Formula.interp_atom`, and
-`Formula.interp_bot` (the last one rewrites `Formula.interp env .bot`
-to `False`). Do NOT use `Formula.interp` on its own as a simp arg —
-the equation lemmas are the only ones registered.
+Output exactly two ALL-CAPS sections.
 
-Output exactly two ALL-CAPS sections. Do NOT include commentary
-between or inside sections — extra lines inside FORMULA: or PROOF:
-will be spliced into the wrapper and break compilation.
+EXTENSION:
+  <Lean 4 term of type `SoundExtension`>
 
-Output format: TWO sections, exactly.
+STRICTNESS:
+  <Lean 4 proof term of type
+   ∃ φ env provVal, proposalExtension.schema φ ∧
+                    Formula.heyting env provVal φ ≠ H3.top>
 
-FORMULA:
-  <Lean 4 term of type `Formula`>
+The strictness proof witnesses an admitted instance that fails to
+be top in some H3 separating model — by `Derivable₀.h3Valid` this
+means it is not T₀-derivable. Without strictness, the proposal is
+sound but doesn't actually climb (it stays inside T₀).
 
-PROOF:
-  <Lean 4 proof term of type `∀ env, Formula.interp env <FORMULA>`>
+If you cannot supply a strictness proof, write `(none)` for the
+STRICTNESS section. The proposal will still be admitted as sound
+but flagged non-strict.
 
-No markdown fences. No commentary. The proof may use `Classical.em`,
-`by_cases`, `decide`, `simp`, `intro`, `exact`, etc.
+Examples of classical-only schemas (vary across rounds):
 
-Example (Peirce's law):
+  Peirce:  schema admits  ((φ → ψ) → φ) → φ
+  DNE:     schema admits  ((φ → ⊥) → ⊥) → φ
+  EM:      schema admits  φ ∨ ¬φ                (tricky: no ∨ in
+                                                  the language)
+  ConsM:   schema admits  ((φ → ⊥) → φ) → φ      (consequentia mirabilis)
 
-FORMULA:
-  .imp (.imp (.imp (.atom \"p\") (.atom \"q\")) (.atom \"p\")) (.atom \"p\")
+Example EXTENSION (Peirce schema, via `SoundExtension.mk`):
 
-PROOF:
-  by
-    intro env
-    simp only [Formula.interp_imp, Formula.interp_atom]
-    intro h
-    by_cases hp : env \"p\"
-    · exact hp
-    · exact h (fun hp' => absurd hp' hp){admittedSection}{retrySection}"
+EXTENSION:
+  SoundExtension.mk
+    (fun ψ => ∃ p q : String, ψ =
+      .imp (.imp (.imp (.atom p) (.atom q)) (.atom p)) (.atom p))
+    (by
+      rintro ψ env ⟨p, q, rfl⟩
+      simp only [Formula.interp_imp, Formula.interp_atom]
+      intro h
+      by_cases hp : env p
+      · exact hp
+      · exact h (fun hp' => absurd hp' hp))
+
+Example STRICTNESS for Peirce (witnesses the standard
+peirceFormula \"p\" \"q\" via the H3 countermodel):
+
+STRICTNESS:
+  ⟨.imp (.imp (.imp (.atom \"p\") (.atom \"q\")) (.atom \"p\")) (.atom \"p\"),
+   counterEnv, counterProvVal,
+   ⟨\"p\", \"q\", rfl⟩,
+   by simp [Formula.heyting, counterEnv, counterProvVal, H3.imp]⟩
+
+No markdown fences. No commentary inside sections. Use
+`Classical.em`, `by_cases`, `decide`, `simp`, `intro`, `exact`,
+etc. as needed for soundness proofs.{admittedSection}{retrySection}"
+
+/-- Regenerate `Climbed.lean` with all admitted extensions and a
+    composite theory `T_climbed`. -/
+def writeClimbedFile (path : String) (admittedSrcs : List String) : IO Unit := do
+  let header := "import Climber
+
+namespace Climber.Climbed
+
+"
+  let defs := admittedSrcs.zipIdx.foldl (fun acc (src, i) =>
+    acc ++ s!"def round_{i} : SoundExtension :=\n{src}\n\n") ""
+  let composite :=
+    if admittedSrcs.isEmpty then
+      "def T_climbed : Theory := Theory.base\n\n"
+    else
+      "def T_climbed : Theory :=\n  Theory.base" ++
+      String.intercalate ""
+        (admittedSrcs.zipIdx.map (fun (_, i) => s!"\n    |>.extend round_{i}")) ++
+      "\n\n"
+  let coda :=
+"theorem T_climbed_sound {φ : Formula} {env : String → Prop}
+    (h : derives T_climbed φ) : Formula.interp env φ :=
+  climb_sound h
+
+end Climber.Climbed
+"
+  IO.FS.writeFile path (header ++ defs ++ composite ++ coda)
+
+/-- Verify the regenerated `Climbed.lean` elaborates. -/
+def verifyClimbedFile (path : String) (workingDir : Option String) : IO Bool := do
+  let out ← IO.Process.output {
+    cmd := "lake"
+    args := #["env", "lean", path]
+    cwd := workingDir
+  }
+  if out.exitCode != 0 then
+    IO.eprintln s!"Climbed.lean failed to elaborate:\n{out.stdout}\n{out.stderr}"
+    return false
+  return true
 
 /-- Run one LLM proposal round through the cascade. -/
 def runOneRound
@@ -173,21 +230,22 @@ def runOneRound
       IO.eprintln s!"Bedrock error: {e}"
       return none
     | .ok rawResponse =>
-      let formulaSrc := fixFirstLineIndent (extractSection "FORMULA:" rawResponse)
-      let proofSrc   := fixFirstLineIndent (extractSection "PROOF:"   rawResponse)
-      IO.println "--- LLM proposed FORMULA ---"
-      IO.println formulaSrc
-      IO.println "--- LLM proposed PROOF ---"
-      IO.println proofSrc
-      let outcome ← Climber.Elab.checkProposal ecfg formulaSrc proofSrc
+      let extensionSrc := fixFirstLineIndent (extractSection "EXTENSION:" rawResponse)
+      let strictRaw    := extractSection "STRICTNESS:" rawResponse
+      let strictSrc    := normalizeStrictSrc strictRaw
+      IO.println "--- LLM proposed EXTENSION ---"
+      IO.println extensionSrc
+      IO.println "--- LLM proposed STRICTNESS ---"
+      IO.println (strictSrc.getD "(none)")
+      let outcome ← Climber.Elab.checkProposal ecfg extensionSrc strictSrc
       match outcome with
       | .elabError msg =>
         if remaining > 0 then
           IO.println s!"(elab error; retrying, {remaining} left)\n{msg}"
-          attempt (some (formulaSrc, proofSrc, msg)) (remaining - 1)
+          attempt (some (extensionSrc, strictSrc.getD "(none)", msg)) (remaining - 1)
         else
-          return some ⟨formulaSrc, proofSrc, outcome⟩
-      | _ => return some ⟨formulaSrc, proofSrc, outcome⟩
+          return some ⟨extensionSrc, strictSrc, outcome⟩
+      | _ => return some ⟨extensionSrc, strictSrc, outcome⟩
   attempt none rcfg.maxRetries
 
 end Climber.Runner

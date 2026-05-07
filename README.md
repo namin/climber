@@ -5,15 +5,26 @@ whose **logical strength climbs under proposer/gate control**, with
 each rung kernel-blessed by an independent metalanguage soundness
 certificate.
 
+> **LCF checks theorem construction; climber checks theory
+> construction.**
+
 The proposer (an LLM, in the full version) does not propose theorems
-or tactics. It proposes **new derivation rules** — soundness
-extensions to the active theory — and supplies a soundness proof in
-the metalanguage. The kernel checks the proof. If it type-checks,
-the rule enters the theory and new theorems become derivable. If
-not, refused.
+or tactics. It proposes **new sound axiom-schema extensions** —
+schemas with soundness certificates — and the kernel admits or
+refuses based on whether the certificate type-checks against the
+metalanguage interp. Admitted extensions enter the theory; new
+theorems become derivable; the system has climbed.
 
 This is the LCF discipline, applied not to proof construction but
-to **proof-system construction**.
+to **proof-system construction**. In the keynote portfolio:
+
+| artifact | what the gate governs |
+|---|---|
+| lean-grey | evaluator modification |
+| lean-green | causal `set!` on a heap cell |
+| LeanDisco | discovery of theorems and heuristics |
+| sc-mini | program-transformation rewrites |
+| **climber** | **the right to extend the proof system itself** |
 
 ## What lives here
 
@@ -69,23 +80,36 @@ to **proof-system construction**.
     cannot reach Con(T₀). The Beklemishev rung made formal.
 - **`Climber/Bedrock.lean`** — AWS Bedrock invoke wrapper for the
   LLM proposer. Defaults to `claude-sonnet-4-6` in `us-east-1`.
-- **`Climber/Elab.lean`** — splices an LLM `(formula, proof)` pair
-  into a wrapper that constructs a `SoundExtension`, runs
-  `lake env lean --run`, classifies as `ADMITTED` (kernel checked
-  the soundness proof) or `ELAB-ERROR` (kernel refused at any
-  stage, with diagnostic).
+- **`Climber/Elab.lean`** — splices an LLM `SoundExtension` term
+  (and optional strictness proof) into wrapper files. Two gates:
+  - *Soundness gate* — the extension must elaborate (the kernel
+    verified the `sound` field type-checks).
+  - *Strictness gate* — the existential
+    `∃ φ env provVal, schema φ ∧ heyting env provVal φ ≠ top`
+    must elaborate (the kernel verified some admitted instance is
+    H3-invalid, hence not T₀-derivable by `Derivable₀.h3Valid`).
+  Outcomes: `ADMITTED-STRICT`, `ADMITTED` (sound but doesn't
+  strictly extend T₀), or `ELAB-ERROR`.
 - **`Climber/Runner.lean`** — orchestrates the cascade. Each
-  round prompts Claude for a classical-only tautology and a
-  proof, splices into the wrapper, classifies, retries on elab
-  errors with the diagnostic fed back into the prompt.
+  round prompts Claude for an EXTENSION + STRICTNESS pair,
+  classifies, retries on elab errors. After each non-error round
+  the runner regenerates `Climbed.lean` containing the
+  accumulated extensions and a composite theory `T_climbed`,
+  then verifies that `Climbed.lean` elaborates.
 - **`Smoke.lean`** — `lake exe smoke`. Reports the load-bearing
   facts at runtime; the kernel did the verification at compile
   time.
 - **`BedrockSmoke.lean`** — `lake exe bedrock-smoke`. One-shot
   Bedrock connectivity check.
 - **`RunnerMain.lean`** — `lake exe runner [N]`. Runs `N` rounds
-  of the LLM/Lean cascade (default 3). Each admitted formula
-  enters T₁ as a kernel-blessed sound axiom.
+  of the LLM/Lean cascade (default 3). Each admitted extension
+  enters the accumulated `T_climbed` as a kernel-blessed sound
+  axiom-schema; after each round, `Climbed.lean` is regenerated
+  and verified.
+- **`Climbed.lean`** — *generated*. The accumulated kernel-blessed
+  composite theory written by the runner across rounds. A
+  committed snapshot serves as evidence of a particular run; any
+  fresh run will overwrite it.
 
 ## Status
 
@@ -102,9 +126,15 @@ to **proof-system construction**.
   T₁_rfn derives Con(T₀), T₀ provably cannot.
 - **The cascade is interactive.** `lake exe runner` runs the
   proposer/gate loop end-to-end against AWS Bedrock; the LLM
-  proposes classical-only tautologies, the kernel checks the
-  soundness proofs, T₁ accumulates kernel-blessed sound axioms
-  across rounds.
+  proposes classical-only schemas plus strictness witnesses; the
+  kernel checks both gates; admitted extensions accumulate into
+  `Climbed.lean` (regenerated and re-verified after every round).
+- **Honest scope.** This is the *propositional, one-rung skeleton*
+  of a reflection progression — not a formalization of Beklemishev's
+  full hierarchy. The architecture is right; the engineering to
+  iterate (level-indexed `prov`, stratified Π_n reflection,
+  ordinal analysis) is sketched in the *Path to iterated
+  reflection-principle climbing* section below.
 
 ## What this demonstrates
 
@@ -132,6 +162,31 @@ across the climb.**
   PA are conservative / sound. The climber is an *artifact* that
   navigates such hierarchies — with a proposer choosing which
   extension to add and a kernel checking the navigation step.
+
+### A note on the H3 separating model
+
+`Counter.lean`'s 3-element Heyting algebra is used in two ways
+that are worth distinguishing.
+
+The `prov` constructor has an **intended interpretation** — under
+`interp`, `prov φ` reduces to the metalanguage proposition
+`Derivable₀ φ`. This is the interpretation under which `soundness₀`
+holds and under which RFN(T₀) is sound.
+
+The H3 model uses an **arbitrary `provVal` assignment**. This is
+*not* an intended interpretation; it is a *separating model* for
+T₀'s syntactic proof calculus. Since T₀ has no rule introducing
+`prov`, every T₀-derivable formula is H3-valid for *any* `provVal`,
+which is what makes the model a separator: any single `provVal`
+that makes a target formula H3-invalid is enough to rule out
+T₀-derivability.
+
+The asymmetry is not a defect. It is the architecture: the gate
+connects the inert object-level `prov` to its intended metalanguage
+meaning, while the H3 separator certifies syntactic non-derivability
+without committing to any single interpretation. Soundness uses the
+intended interpretation; strictness uses an arbitrary separating
+one. Different jobs, different models, both kernel-checked.
 
 ## Path to iterated reflection-principle climbing
 
@@ -210,28 +265,32 @@ lake exe runner           # 3 rounds (default)
 lake exe runner 10        # 10 rounds
 ```
 
-Each round, Claude proposes a classical-only tautology and a Lean
-proof of its metalanguage truth. The kernel checks the proof. On
-admission, the formula enters T₁ as a kernel-blessed sound axiom
-and is shown to Claude in subsequent rounds (de-duplication). On
-elab error, Lean's diagnostic is fed back to Claude for one retry.
+Each round, Claude proposes:
 
-A typical run admits classical theorems like double-negation
-elimination `((φ → ⊥) → ⊥) → φ`, Peirce's law
-`((φ → ψ) → φ) → φ`, consequentia mirabilis
-`((φ → ⊥) → φ) → φ`. Each is a formula provably outside T₀
-(by the same H3-style countermodel `Counter.lean` constructs for
-Peirce) and inside T₁ via the admitted certificate. The cascade
-is the climb made interactive.
+1. an **EXTENSION** — a `SoundExtension` term (schema + soundness
+   certificate);
+2. a **STRICTNESS** witness — an existential proof that some
+   instance admitted by the schema is H3-invalid under some
+   `(env, provVal)`, hence not T₀-derivable.
 
-**Scope of the cascade prompt.** `Runner.lean`'s prompt describes
-`Formula` as `bot | atom | imp` only — it intentionally omits the
-`prov` constructor. The cascade is for *classical-only axiom-schema*
-extensions (Peirce-style); the *internal reflection* extension
-(RFN(T₀)) is statically demonstrated in `Reflection.lean` rather
-than driven by the cascade. Telling the LLM about `prov` would
-muddle the two demos. Adding a `prov`-aware cascade — where the
-LLM proposes its own reflection schemas — is a natural follow-up.
+Two gates run sequentially. On both passing, the verdict is
+`ADMITTED-STRICT` — sound and strictly extending T₀. On only the
+soundness gate passing, `ADMITTED` — sound but not necessarily
+climbing. On the soundness gate failing, `ELAB-ERROR` with Lean's
+diagnostic fed back for one retry.
+
+After every non-error round, the runner regenerates `Climbed.lean`
+containing all admitted extensions as `round_0`, `round_1`, … and a
+composite theory `T_climbed := Theory.base.extend round_0.extend round_1…`,
+plus `T_climbed_sound` as a corollary of `climb_sound`. The runner
+verifies `Climbed.lean` elaborates after writing it. The cascade
+literally leaves behind a kernel-buildable climbed theory.
+
+A typical run admits classical schemas like Peirce's law
+`((φ → ψ) → φ) → φ`, double-negation elimination
+`((φ → ⊥) → ⊥) → φ`, or consequentia mirabilis
+`((φ → ⊥) → φ) → φ`. Each is a schema whose admission strictly
+extends T₀ — verified at admission time, not by inspection.
 
 ## References
 
