@@ -224,6 +224,15 @@ elimination `((φ → ⊥) → ⊥) → φ`, Peirce's law
 Peirce) and inside T₁ via the admitted certificate. The cascade
 is the climb made interactive.
 
+**Scope of the cascade prompt.** `Runner.lean`'s prompt describes
+`Formula` as `bot | atom | imp` only — it intentionally omits the
+`prov` constructor. The cascade is for *classical-only axiom-schema*
+extensions (Peirce-style); the *internal reflection* extension
+(RFN(T₀)) is statically demonstrated in `Reflection.lean` rather
+than driven by the cascade. Telling the LLM about `prov` would
+muddle the two demos. Adding a `prov`-aware cascade — where the
+LLM proposes its own reflection schemas — is a natural follow-up.
+
 ## References
 
 - Feferman 1962, *Transfinite Recursive Progressions of Axiomatic
