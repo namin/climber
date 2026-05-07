@@ -81,25 +81,18 @@ to **proof-system construction**. In the keynote portfolio:
 - **`Climber/Bedrock.lean`** — AWS Bedrock invoke wrapper for the
   LLM proposer. Defaults to `claude-sonnet-4-6` in `us-east-1`.
 - **`Climber/Elab.lean`** — splices an LLM `SoundExtension` term
-  (and optional strictness proof) into wrapper files. Two gates:
-  - *Soundness gate* — the extension must elaborate (the kernel
-    verified the `sound` field type-checks).
-  - *Strictness gate* — the existential
-    `∃ φ env provVal, schema φ ∧ heyting env provVal φ ≠ top`
-    must elaborate (the kernel verified some admitted instance is
-    H3-invalid, hence not T₀-derivable by `Derivable₀.h3Valid`).
-    This certifies *base-strictness* — the schema reaches beyond T₀.
-    It does *not* certify *relative* strictness over the already
-    accumulated climbed theory; that is a stronger refinement
-    noted as future work below.
-  Outcomes: `ADMITTED-STRICT`, `ADMITTED` (sound; no strictness
-  certificate accepted), or `ELAB-ERROR`.
+  into a wrapper file. Outcomes: `ADMITTED` (the kernel verified
+  the `sound` field type-checks against the metalanguage interp;
+  the schema enters the climbed theory) or `ELAB-ERROR`
+  (compilation failed; the diagnostic is fed back).
 - **`Climber/Runner.lean`** — orchestrates the cascade. Each
-  round prompts Claude for an EXTENSION + STRICTNESS pair,
-  classifies, retries on elab errors. After each non-error round
-  the runner regenerates `Climbed.lean` containing the
-  accumulated extensions and a composite theory `T_climbed`,
-  then verifies that `Climbed.lean` elaborates.
+  round prompts Claude for an EXTENSION, classifies, retries on
+  elab errors. After each non-error round the runner regenerates
+  `Climbed.lean` containing the accumulated extensions and a
+  composite theory `T_climbed`, then verifies that `Climbed.lean`
+  elaborates. Unreachable-line claims are *not* part of the
+  cascade verdict — they live in the static artifact
+  (`peirce_not_derivable_in_T₀`, `con_not_derivable_in_T₀`).
 - **`Smoke.lean`** — `lake exe smoke`. Reports the load-bearing
   facts at runtime; the kernel did the verification at compile
   time.
@@ -130,9 +123,11 @@ to **proof-system construction**. In the keynote portfolio:
   T₁_rfn derives Con(T₀), T₀ provably cannot.
 - **The cascade is interactive.** `lake exe runner` runs the
   proposer/gate loop end-to-end against AWS Bedrock; the LLM
-  proposes classical-only schemas plus strictness witnesses; the
-  kernel checks both gates; admitted extensions accumulate into
+  proposes `SoundExtension` terms; the kernel checks the
+  soundness certificate; admitted extensions accumulate into
   `Climbed.lean` (regenerated and re-verified after every round).
+  The unreachable-line claims live in the static artifact, not in
+  the cascade verdict.
 - **Honest scope.** This is the *propositional, one-rung skeleton*
   of a reflection progression — not a formalization of Beklemishev's
   full hierarchy. The architecture is right; the engineering to
@@ -187,10 +182,10 @@ T₀-derivability.
 
 The asymmetry is not a defect. It is the architecture: the gate
 connects the inert object-level `prov` to its intended metalanguage
-meaning, while the H3 separator certifies syntactic non-derivability
-without committing to any single interpretation. Soundness uses the
-intended interpretation; strictness uses an arbitrary separating
-one. Different jobs, different models, both kernel-checked.
+meaning (for soundness), while the H3 separator certifies syntactic
+non-derivability without committing to any single interpretation
+(for the unreachable-line claims). Different jobs, different
+models, both kernel-checked.
 
 ## Path to iterated reflection-principle climbing
 
@@ -221,22 +216,11 @@ The remaining gaps:
    ordinals; not required for finite-rung demos. Engineering, not
    research.
 
-4. **Relative strictness across rungs.** The cascade's strictness
-   gate currently certifies *base-strictness*: each admitted
-   schema admits at least one formula outside T₀. It does not
-   certify that the schema admits something new relative to the
-   already accumulated `T_climbed`. A relative-strictness gate
-   would require a separating model that satisfies the previously
-   admitted rules and rejects the new schema's witness — a
-   genuine proof-theoretic refinement. Out of scope for the
-   current artifact; a clean target for the journal version.
-
-Each of (1)–(3) is finite work; (4) is a real refinement. The
-architectural claim — that a kernel-checked metalanguage soundness
-certificate is the right gate for theory extension, including for
-internal reflection principles — is already demonstrated by
-`climb_sound` together with `T₁_rfn_derives_con` and
-`con_not_derivable_in_T₀`.
+Each of these is finite work. The architectural claim — that a
+kernel-checked metalanguage soundness certificate is the right gate
+for theory extension, including for internal reflection principles —
+is already demonstrated by `climb_sound` together with
+`T₁_rfn_derives_con` and `con_not_derivable_in_T₀`.
 
 ## Relationship to the rest of the keynote portfolio
 
@@ -280,53 +264,37 @@ lake exe runner           # 3 rounds (default)
 lake exe runner 10        # 10 rounds
 ```
 
-Each round, Claude proposes:
-
-1. an **EXTENSION** — a `SoundExtension` term (schema + soundness
-   certificate);
-2. a **STRICTNESS** witness — an existential proof that some
-   instance admitted by the schema is H3-invalid under some
-   `(env, provVal)`, hence not T₀-derivable.
-
-Two gates run sequentially. On both passing, the verdict is
-`ADMITTED-STRICT` — sound, plus a kernel-checked certificate that
-the schema admits at least one formula outside T₀ (base-strictness).
-On only the soundness gate passing, `ADMITTED` — sound; no
-strictness certificate accepted (the proposal *may* still be base-
-strict, but no certificate was supplied or verified). On the
-soundness gate failing, `ELAB-ERROR` with Lean's diagnostic fed
-back for one retry.
+Each round, Claude proposes an **EXTENSION** — a `SoundExtension`
+term (schema + soundness certificate). One gate runs: the
+extension must elaborate. On success, `ADMITTED` — the kernel
+verified the soundness certificate, the schema enters the
+accumulated climbed theory. On failure, `ELAB-ERROR` with Lean's
+diagnostic fed back for one retry.
 
 After every non-error round, the runner regenerates `Climbed.lean`
-containing all admitted extensions as `round_0`, `round_1`, … and a
-composite theory `T_climbed := Theory.base.extend round_0.extend round_1…`,
-plus `T_climbed_sound` as a corollary of `climb_sound`. The runner
+containing all admitted extensions as `round_0`, `round_1`, … and
+a composite theory
+`T_climbed := Theory.base.extend round_0.extend round_1…`, plus
+`T_climbed_sound` as a corollary of `climb_sound`. The runner
 verifies `Climbed.lean` elaborates after writing it. The file is
-**replayable evidence of soundness** — the accumulated theory and
-its soundness corollary survive `lake env lean Climbed.lean`. It is
-*not* a replay of the per-round strictness verdicts: the strictness
-witnesses are not currently emitted into the file. (Persisting them
-is a clean follow-up if `Climbed.lean` is meant to be the complete
-certificate of the run rather than just of the climbed theory.)
-
-**Honest scope of `ADMITTED-STRICT`.** The strictness gate certifies
-that the schema admits at least one formula outside T₀ — not that
-the schema admits something *new relative to* the already
-accumulated `T_climbed`. A duplicate Peirce extension would still
-pass strictness on every round (its schema still contains an
-H3-invalid instance) even though it adds nothing beyond the
-previous Peirce admission. *Relative* strictness — certifying that
-each rung extends the previous rung, not just the base — is a
-proof-theoretic refinement noted in *Path to ... climbing* below.
-For the keynote, base-strictness is what supports the headline
-claim ("the climb crosses an unreachable line"); the relative
-refinement is a journal-version target.
+**replayable evidence** that the cascade-built theory is sound:
+the accumulated `SoundExtension`s and the soundness corollary
+survive `lake env lean Climbed.lean`.
 
 A typical run admits classical schemas like Peirce's law
 `((φ → ψ) → φ) → φ`, double-negation elimination
 `((φ → ⊥) → ⊥) → φ`, or consequentia mirabilis
-`((φ → ⊥) → φ) → φ`. Each is a schema whose admission strictly
-extends T₀ — verified at admission time, not by inspection.
+`((φ → ⊥) → φ) → φ`.
+
+**Where the unreachable-line claims live.** The cascade does not
+verdict on T₀-non-derivability. Those claims are in the static
+artifact: `peirce_not_derivable_in_T₀` (in `Counter.lean`) and
+`con_not_derivable_in_T₀` (in `Reflection.lean`) prove the climb
+crossed unreachable lines via H3 separating models — kernel-
+checked, independent of any cascade run. The cascade is the same
+proposer/gate soundness loop made interactive; the headline
+"unreachable line crossed" sentences in the talk are anchored by
+the static theorems, not by cascade verdicts.
 
 ## References
 

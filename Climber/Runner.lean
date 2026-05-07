@@ -2,37 +2,22 @@
   An LLM/Lean cascade over the climber's gate.
 
   Each round:
-    1. Prompt Bedrock for an EXTENSION (a `SoundExtension` term) and
-       a STRICTNESS proof (an existential
-       `∃ φ env provVal, schema φ ∧ heyting env provVal φ ≠ H3.top`).
-    2. Run two checks:
-       - **Soundness gate**: the extension must elaborate (its
-         `sound` field type-checks against the metalanguage interp).
-       - **Strictness gate**: the strictness proof must elaborate
-         (the kernel verified some admitted instance is H3-invalid,
-         hence not T₀-derivable).
-    3. Outcome: `.admittedStrict` (both gates pass — sound *and*
-       certified to admit something outside T₀, i.e. base-strict),
-       `.admitted` (only soundness — sound; no strictness
-       certificate accepted), or `.elabError` (the soundness gate
-       failed).
-
-       Note: base-strictness ≠ relative strictness. A duplicate
-       extension whose schema still reaches outside T₀ will pass
-       the strictness gate even if it adds nothing beyond
-       previously admitted rounds. Relative strictness over the
-       accumulated `T_climbed` is a refinement, not in the current
-       gate.
+    1. Prompt Bedrock for an EXTENSION (a `SoundExtension` term).
+    2. Run the soundness gate: the extension must elaborate (its
+       `sound` field type-checks against the metalanguage interp).
+    3. Outcome: `.admitted` (the kernel checked the soundness
+       certificate; the schema enters the climbed theory) or
+       `.elabError` (the gate failed; Lean's diagnostic is fed
+       back into the prompt for one retry).
     4. After each non-error round, the runner regenerates
-       `Climbed.lean` containing the accumulated extensions and the
-       composite theory `T_climbed`. The user can run
-       `lake env lean Climbed.lean` to confirm that a kernel-checked
-       climbed theory has been left behind.
+       `Climbed.lean` containing the accumulated extensions and
+       the composite theory `T_climbed`, then verifies it
+       elaborates.
 
-  The cascade is the climb made interactive — the proposer offers
-  schemas with metalanguage soundness certificates; the kernel
-  admits or refuses; admitted schemas accumulate into a
-  kernel-buildable composite theory.
+  The cascade is the proposer/gate soundness loop made
+  interactive. Unreachable-line claims live in the static artifact
+  (`peirce_not_derivable_in_T₀`, `con_not_derivable_in_T₀`); the
+  cascade itself just admits sound extensions.
 -/
 
 import Climber.Bedrock
@@ -42,13 +27,12 @@ namespace Climber.Runner
 
 structure RoundResult where
   extensionSrc : String
-  strictSrc    : Option String
   outcome      : Climber.Elab.Result
 
 structure Config where
-  maxRetries     : Nat    := 1
+  maxRetries  : Nat    := 1
   /-- Path the runner writes the accumulated climbed theory to. -/
-  climbedPath    : String := "Climbed.lean"
+  climbedPath : String := "Climbed.lean"
 
 def defaultConfig : Config := {}
 
@@ -84,23 +68,15 @@ def fixFirstLineIndent (src : String) : String :=
     else src
   | _ => src
 
-/-- Treat empty / placeholder strictness sections as absent. -/
-def normalizeStrictSrc (s : String) : Option String :=
-  let trimmed := s.trimAscii.toString
-  if trimmed.isEmpty || trimmed == "(none)" || trimmed == "none" then
-    none
-  else
-    some (fixFirstLineIndent s)
-
 def buildPrompt (admitted : List String)
-    (retry : Option (String × String × String) := none) : String :=
+    (retry : Option (String × String) := none) : String :=
   let admittedSection := if admitted.isEmpty then "" else
     "\n\nPreviously admitted extensions (don't propose duplicates):\n" ++
     String.intercalate "\n---\n" admitted ++ "\n"
   let retrySection := match retry with
     | none => ""
-    | some (prevExt, prevStrict, err) =>
-      s!"\n\nYour previous attempt was rejected by Lean.\n\nEXTENSION:\n{prevExt}\n\nSTRICTNESS:\n{prevStrict}\n\nLean's diagnostic:\n{err}\n\nProduce a corrected version.\n"
+    | some (prevExt, err) =>
+      s!"\n\nYour previous attempt was rejected by Lean.\n\nEXTENSION:\n{prevExt}\n\nLean's diagnostic:\n{err}\n\nProduce a corrected version.\n"
   s!"You are proposing a SoundExtension to the climber's base theory T₀.
 
 T₀ is minimal implicational logic with ⊥-elim:
@@ -110,12 +86,11 @@ T₀ is minimal implicational logic with ⊥-elim:
   - MP:         from φ → ψ and φ infer ψ
 
 T₀ has an inert internal provability constructor `prov : Formula → Formula`,
-interpreted in the metalanguage as `Derivable₀ φ`. T₀ has no rule for
-`prov`; reflection schemas can install rules involving it.
+interpreted in the metalanguage as `Derivable₀ φ`.
 
 Your job: propose a `SoundExtension` whose schema admits new sound
-formulas, and supply a *strictness witness* proving that some
-admitted instance is not T₀-derivable.
+formulas. The kernel checks the soundness certificate; on
+admission, the extension enters the accumulated climbed theory.
 
 Data types:
 
@@ -129,34 +104,15 @@ Data types:
     schema : Formula → Prop
     sound  : ∀ φ env, schema φ → Formula.interp env φ
 
-  -- 3-element Heyting algebra for separating model
-  inductive H3 where | bot | mid | top
-
-Output exactly two ALL-CAPS sections.
+Output exactly one ALL-CAPS section.
 
 EXTENSION:
   <Lean 4 term of type `SoundExtension`>
-
-STRICTNESS:
-  <Lean 4 proof term of type
-   ∃ φ env provVal, proposalExtension.schema φ ∧
-                    Formula.heyting env provVal φ ≠ H3.top>
-
-The strictness proof witnesses an admitted instance that fails to
-be top in some H3 separating model — by `Derivable₀.h3Valid` this
-means it is not T₀-derivable. Without strictness, the proposal is
-sound but doesn't actually climb (it stays inside T₀).
-
-If you cannot supply a strictness proof, write `(none)` for the
-STRICTNESS section. The proposal will still be admitted as sound
-but flagged non-strict.
 
 Examples of classical-only schemas (vary across rounds):
 
   Peirce:  schema admits  ((φ → ψ) → φ) → φ
   DNE:     schema admits  ((φ → ⊥) → ⊥) → φ
-  EM:      schema admits  φ ∨ ¬φ                (tricky: no ∨ in
-                                                  the language)
   ConsM:   schema admits  ((φ → ⊥) → φ) → φ      (consequentia mirabilis)
 
 Example EXTENSION (Peirce schema, via `SoundExtension.mk`):
@@ -173,18 +129,9 @@ EXTENSION:
       · exact hp
       · exact h (fun hp' => absurd hp' hp))
 
-Example STRICTNESS for Peirce (witnesses the standard
-peirceFormula \"p\" \"q\" via the H3 countermodel):
-
-STRICTNESS:
-  ⟨.imp (.imp (.imp (.atom \"p\") (.atom \"q\")) (.atom \"p\")) (.atom \"p\"),
-   counterEnv, counterProvVal,
-   ⟨\"p\", \"q\", rfl⟩,
-   by simp [Formula.heyting, counterEnv, counterProvVal, H3.imp]⟩
-
 No markdown fences. No commentary inside sections. Use
 `Classical.em`, `by_cases`, `decide`, `simp`, `intro`, `exact`,
-etc. as needed for soundness proofs.{admittedSection}{retrySection}"
+etc. as needed.{admittedSection}{retrySection}"
 
 /-- Regenerate `Climbed.lean` with all admitted extensions and a
     composite theory `T_climbed`. -/
@@ -230,7 +177,7 @@ def runOneRound
     (bcfg : Climber.Bedrock.Config) (ecfg : Climber.Elab.Config)
     (rcfg : Config) (admitted : List String)
     : IO (Option RoundResult) := do
-  let rec attempt (retry : Option (String × String × String)) (remaining : Nat) :
+  let rec attempt (retry : Option (String × String)) (remaining : Nat) :
       IO (Option RoundResult) := do
     let prompt := buildPrompt admitted retry
     match ← Climber.Bedrock.invoke bcfg prompt with
@@ -239,21 +186,17 @@ def runOneRound
       return none
     | .ok rawResponse =>
       let extensionSrc := fixFirstLineIndent (extractSection "EXTENSION:" rawResponse)
-      let strictRaw    := extractSection "STRICTNESS:" rawResponse
-      let strictSrc    := normalizeStrictSrc strictRaw
       IO.println "--- LLM proposed EXTENSION ---"
       IO.println extensionSrc
-      IO.println "--- LLM proposed STRICTNESS ---"
-      IO.println (strictSrc.getD "(none)")
-      let outcome ← Climber.Elab.checkProposal ecfg extensionSrc strictSrc
+      let outcome ← Climber.Elab.checkProposal ecfg extensionSrc
       match outcome with
       | .elabError msg =>
         if remaining > 0 then
           IO.println s!"(elab error; retrying, {remaining} left)\n{msg}"
-          attempt (some (extensionSrc, strictSrc.getD "(none)", msg)) (remaining - 1)
+          attempt (some (extensionSrc, msg)) (remaining - 1)
         else
-          return some ⟨extensionSrc, strictSrc, outcome⟩
-      | _ => return some ⟨extensionSrc, strictSrc, outcome⟩
+          return some ⟨extensionSrc, outcome⟩
+      | _ => return some ⟨extensionSrc, outcome⟩
   attempt none rcfg.maxRetries
 
 end Climber.Runner

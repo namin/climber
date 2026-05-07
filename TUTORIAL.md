@@ -347,20 +347,14 @@ lake exe runner          # 3 rounds (default)
 lake exe runner 5        # 5 rounds
 ```
 
-Each round, Claude proposes:
-
-1. an **EXTENSION** — a `SoundExtension` term;
-2. a **STRICTNESS** witness — an existential proof that some
-   instance admitted by the schema is H3-invalid (hence outside
-   T₀, by `Derivable₀.h3Valid`).
-
-The runner runs two wrappers (extension-only and extension+strictness),
+Each round, Claude proposes an **EXTENSION** — a `SoundExtension`
+term. The runner writes a wrapper, runs `lake env lean --run`,
 classifies, retries on elab errors. Verdicts:
 
-- `ADMITTED-STRICT` — sound *and* certified to admit something
-  outside T₀.
-- `ADMITTED` — sound; no strictness certificate accepted.
-- `ELAB-ERROR` — soundness gate failed; diagnostic fed back.
+- `ADMITTED` — the kernel verified the soundness certificate; the
+  schema enters the accumulated climbed theory.
+- `ELAB-ERROR` — the kernel refused; Lean's diagnostic is fed back
+  to the LLM for one retry.
 
 After every non-error round, the runner regenerates `Climbed.lean`:
 
@@ -393,12 +387,13 @@ lake env lean Climbed.lean
 If it elaborates without errors, you have a kernel-blessed theory
 the cascade built.
 
-**Honest scope.** `ADMITTED-STRICT` certifies *base-strictness* —
-the schema admits something outside T₀. It does not certify
-*relative strictness* — a duplicate Peirce extension would still
-pass strictness even though it adds nothing beyond a previous
-Peirce admission. See the README's *Honest scope of
-ADMITTED-STRICT* for the full discussion.
+**Where the unreachable-line claims live.** The cascade verdicts
+do not certify T₀-non-derivability. Those claims are in the static
+artifact: `peirce_not_derivable_in_T₀` (in §4) and
+`con_not_derivable_in_T₀` (in §5). The cascade is the same
+proposer/gate soundness loop made interactive; the on-stage
+"unreachable line crossed" sentence is anchored by the static
+theorems, not by cascade verdicts.
 
 **Takeaway.** The architecture is interactive. The proposer is
 unbounded; the gate is narrow; the system leaves behind a
@@ -494,9 +489,9 @@ If you want to extend the artifact rather than just read it:
   sequence of theories, and admit RFN(T_n) at each rung. The
   README's *Path to iterated reflection-principle climbing*
   sketches the engineering.
-- Even sharper: write a relative-strictness gate. The current
-  cascade certifies "this schema reaches outside T₀"; a relative
-  gate would certify "this schema reaches outside the previously
-  accumulated `T_climbed`." Genuine proof-theoretic refinement.
+- Adapt `Counter.lean`'s H3 separating model to prove non-
+  derivability of other classical-only formulas in T₀ (DNE,
+  consequentia mirabilis, …) and pair each one with its admitted
+  extension for a richer set of unreachable-line theorems.
 
 Welcome to the climb.

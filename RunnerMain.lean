@@ -30,14 +30,11 @@ def main (args : List String) : IO Unit := do
         else
           IO.println "Climbed.lean: regenerated but FAILED to elaborate"
   IO.println "\n========== SUMMARY =========="
-  IO.println s!"Total rounds:    {log.length}"
-  IO.println s!"Admitted:        {admitted.length}"
-  let nStrict := log.filter (·.outcome.isStrict) |>.length
-  IO.println s!"  ↳ strict:      {nStrict}"
-  IO.println s!"  ↳ non-strict:  {admitted.length - nStrict}"
+  IO.println s!"Total rounds:  {log.length}"
+  IO.println s!"Admitted:      {admitted.length}"
   let nErr := log.filter (fun r => match r.outcome with
     | .elabError _ => true | _ => false) |>.length
-  IO.println s!"Elab errors:     {nErr}"
+  IO.println s!"Elab errors:   {nErr}"
   if !admitted.isEmpty then
     IO.println s!"\nClimbed theory written to: {rcfg.climbedPath}"
     IO.println "Verify standalone with: lake env lean Climbed.lean"
