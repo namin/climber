@@ -88,8 +88,12 @@ to **proof-system construction**. In the keynote portfolio:
     `∃ φ env provVal, schema φ ∧ heyting env provVal φ ≠ top`
     must elaborate (the kernel verified some admitted instance is
     H3-invalid, hence not T₀-derivable by `Derivable₀.h3Valid`).
-  Outcomes: `ADMITTED-STRICT`, `ADMITTED` (sound but doesn't
-  strictly extend T₀), or `ELAB-ERROR`.
+    This certifies *base-strictness* — the schema reaches beyond T₀.
+    It does *not* certify *relative* strictness over the already
+    accumulated climbed theory; that is a stronger refinement
+    noted as future work below.
+  Outcomes: `ADMITTED-STRICT`, `ADMITTED` (sound; no strictness
+  certificate accepted), or `ELAB-ERROR`.
 - **`Climber/Runner.lean`** — orchestrates the cascade. Each
   round prompts Claude for an EXTENSION + STRICTNESS pair,
   classifies, retries on elab errors. After each non-error round
@@ -217,11 +221,22 @@ The remaining gaps:
    ordinals; not required for finite-rung demos. Engineering, not
    research.
 
-Each of these is finite work. The architectural claim — that a
-kernel-checked metalanguage soundness certificate is the right gate
-for theory extension, including for internal reflection principles —
-is already demonstrated by `climb_sound` together with
-`T₁_rfn_derives_con` and `con_not_derivable_in_T₀`.
+4. **Relative strictness across rungs.** The cascade's strictness
+   gate currently certifies *base-strictness*: each admitted
+   schema admits at least one formula outside T₀. It does not
+   certify that the schema admits something new relative to the
+   already accumulated `T_climbed`. A relative-strictness gate
+   would require a separating model that satisfies the previously
+   admitted rules and rejects the new schema's witness — a
+   genuine proof-theoretic refinement. Out of scope for the
+   current artifact; a clean target for the journal version.
+
+Each of (1)–(3) is finite work; (4) is a real refinement. The
+architectural claim — that a kernel-checked metalanguage soundness
+certificate is the right gate for theory extension, including for
+internal reflection principles — is already demonstrated by
+`climb_sound` together with `T₁_rfn_derives_con` and
+`con_not_derivable_in_T₀`.
 
 ## Relationship to the rest of the keynote portfolio
 
@@ -274,17 +289,38 @@ Each round, Claude proposes:
    `(env, provVal)`, hence not T₀-derivable.
 
 Two gates run sequentially. On both passing, the verdict is
-`ADMITTED-STRICT` — sound and strictly extending T₀. On only the
-soundness gate passing, `ADMITTED` — sound but not necessarily
-climbing. On the soundness gate failing, `ELAB-ERROR` with Lean's
-diagnostic fed back for one retry.
+`ADMITTED-STRICT` — sound, plus a kernel-checked certificate that
+the schema admits at least one formula outside T₀ (base-strictness).
+On only the soundness gate passing, `ADMITTED` — sound; no
+strictness certificate accepted (the proposal *may* still be base-
+strict, but no certificate was supplied or verified). On the
+soundness gate failing, `ELAB-ERROR` with Lean's diagnostic fed
+back for one retry.
 
 After every non-error round, the runner regenerates `Climbed.lean`
 containing all admitted extensions as `round_0`, `round_1`, … and a
 composite theory `T_climbed := Theory.base.extend round_0.extend round_1…`,
 plus `T_climbed_sound` as a corollary of `climb_sound`. The runner
-verifies `Climbed.lean` elaborates after writing it. The cascade
-literally leaves behind a kernel-buildable climbed theory.
+verifies `Climbed.lean` elaborates after writing it. The file is
+**replayable evidence of soundness** — the accumulated theory and
+its soundness corollary survive `lake env lean Climbed.lean`. It is
+*not* a replay of the per-round strictness verdicts: the strictness
+witnesses are not currently emitted into the file. (Persisting them
+is a clean follow-up if `Climbed.lean` is meant to be the complete
+certificate of the run rather than just of the climbed theory.)
+
+**Honest scope of `ADMITTED-STRICT`.** The strictness gate certifies
+that the schema admits at least one formula outside T₀ — not that
+the schema admits something *new relative to* the already
+accumulated `T_climbed`. A duplicate Peirce extension would still
+pass strictness on every round (its schema still contains an
+H3-invalid instance) even though it adds nothing beyond the
+previous Peirce admission. *Relative* strictness — certifying that
+each rung extends the previous rung, not just the base — is a
+proof-theoretic refinement noted in *Path to ... climbing* below.
+For the keynote, base-strictness is what supports the headline
+claim ("the climb crosses an unreachable line"); the relative
+refinement is a journal-version target.
 
 A typical run admits classical schemas like Peirce's law
 `((φ → ψ) → φ) → φ`, double-negation elimination

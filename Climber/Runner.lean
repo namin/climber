@@ -11,10 +11,18 @@
        - **Strictness gate**: the strictness proof must elaborate
          (the kernel verified some admitted instance is H3-invalid,
          hence not T₀-derivable).
-    3. Outcome: `.admittedStrict` (both gates pass — the climb
-       genuinely climbs), `.admitted` (only soundness — the
-       extension is sound but the proposal didn't strictly extend
-       T₀), or `.elabError` (the soundness gate failed).
+    3. Outcome: `.admittedStrict` (both gates pass — sound *and*
+       certified to admit something outside T₀, i.e. base-strict),
+       `.admitted` (only soundness — sound; no strictness
+       certificate accepted), or `.elabError` (the soundness gate
+       failed).
+
+       Note: base-strictness ≠ relative strictness. A duplicate
+       extension whose schema still reaches outside T₀ will pass
+       the strictness gate even if it adds nothing beyond
+       previously admitted rounds. Relative strictness over the
+       accumulated `T_climbed` is a refinement, not in the current
+       gate.
     4. After each non-error round, the runner regenerates
        `Climbed.lean` containing the accumulated extensions and the
        composite theory `T_climbed`. The user can run

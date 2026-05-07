@@ -23,8 +23,12 @@
      extends T₀.
 
   Outcomes: `ELAB-ERROR` (the extension wrapper failed),
-  `ADMITTED` (extension passes, strictness fails or absent), or
-  `ADMITTED-STRICT` (both pass).
+  `ADMITTED` (sound; no strictness certificate accepted — the
+  proposal *may* still be base-strict, no claim is being made
+  either way), or `ADMITTED-STRICT` (sound *and* certified to
+  admit at least one formula outside T₀, i.e. base-strict).
+  The gate does not certify *relative* strictness over previously
+  admitted rounds.
 
   This is the LCF discipline at the climb's gate, with a second
   optional gate for strictness. Splicing Lean source and running
