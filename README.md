@@ -44,6 +44,15 @@ to **proof-system construction**.
   - `T₁ := T₀.extend peirceExtension`.
   - `T₁_derives_peirce`: T₁ derives any instance of Peirce's law.
   - `T₁_sound`: corollary of `climb_sound`.
+- **`Climber/Counter.lean`** — countermodel showing T₀ does not
+  derive Peirce.
+  - `H3`: 3-element linear Heyting algebra `{bot < mid < top}`.
+  - `Formula.heyting`: interpretation into H3.
+  - `Derivable₀.h3Valid`: every T₀-derivable formula evaluates to
+    top under any H3 environment. K, S, ⊥-elim valid; MP preserves.
+  - `counterEnv`: the assignment `p ↦ mid, _ ↦ bot`.
+  - `peirce_h3_value`: Peirce evaluates to `mid` under `counterEnv`.
+  - `peirce_not_derivable_in_T₀`: corollary — `¬ Derivable₀ peirce`.
 - **`Smoke.lean`** — `lake exe smoke`. Reports the load-bearing
   facts at runtime; the kernel did the verification at compile
   time.
@@ -53,17 +62,24 @@ to **proof-system construction**.
 - **Builds clean** on `leanprover/lean4:v4.29.1`. `lake build`
   finishes in seconds.
 - **Zero sorries.** `climb_sound`, `climb_consistent`,
-  `T₁_derives_peirce`, `T₁_sound`, `peirceSound`, `soundness₀` are
-  all fully proved.
-- **One acknowledged obligation deferred:** the formal proof that
-  Peirce's law is *not* derivable in T₀. This is a well-known fact
-  (intuitionistic implicational logic is not classical) and would
-  be discharged via Heyting-algebra or Kripke semantics — ~50 LOC
-  of model theory. The climb mechanism itself does not depend on
-  this; it would only sharpen the demo's narrative ("T₀ couldn't
-  prove this, T₁ can").
+  `T₁_derives_peirce`, `T₁_sound`, `peirceSound`, `soundness₀`,
+  `Derivable₀.h3Valid`, `peirce_not_derivable_in_T₀` are all fully
+  proved.
+- **The climb crosses an unreachable line.** The countermodel
+  proves T₀ provably cannot reach Peirce; the admitted Peirce
+  extension makes T₁ derive it; `climb_sound` keeps T₁ sound.
 
 ## What this demonstrates
+
+**The climb crosses a provably unreachable line, and stays sound.**
+T₀ is shown by the H3 countermodel to be incapable of deriving
+Peirce's law (`peirce_not_derivable_in_T₀`). The proposer offers
+Peirce as a `SoundExtension` with a kernel-checked classical truth
+certificate; T₁ now derives it (`T₁_derives_peirce`); the headline
+`climb_sound` carries T₀'s metalanguage truth across to T₁
+(`T₁_sound`). Three theorems, one rung — the system's logical
+strength has provably grown without leaving the metalanguage's
+truth.
 
 The architecture: **proposer/gate-controlled extension of a formal
 system's derivation calculus, with metalanguage soundness preserved
@@ -122,7 +138,7 @@ already demonstrated by `climb_sound` in the present development.
   climber modifies the rule set of a derivation calculus.
 - **lean-green** realizes Smith's "meta-level is data" via real
   heap mutation. Climber's analogue is the `Theory.extras` list,
-  which grows by `extend`; the ` SoundExtension` admitted at each
+  which grows by `extend`; the `SoundExtension` admitted at each
   step is the `set!`-equivalent.
 - **LeanDisco** discovers theorems and heuristics with kernel
   verification. Climber discovers *derivation rules* — a deeper
@@ -155,3 +171,6 @@ lake exe smoke   # runs it
   architecture climber's `Theory` extends.
 - Milner 1972 / LCF lineage. The kernel discipline climber's
   admission gate instantiates.
+- Heyting 1930. The 3-element linear Heyting algebra used in
+  `Counter.lean` to separate intuitionistic from classical
+  implicational logic.
