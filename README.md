@@ -47,27 +47,64 @@ to **proof-system construction**.
 - **`Climber/Counter.lean`** — countermodel showing T₀ does not
   derive Peirce.
   - `H3`: 3-element linear Heyting algebra `{bot < mid < top}`.
-  - `Formula.heyting`: interpretation into H3.
+  - `Formula.heyting`: interpretation into H3, parameterized over
+    a `provVal` assignment for `prov φ` atoms.
   - `Derivable₀.h3Valid`: every T₀-derivable formula evaluates to
-    top under any H3 environment. K, S, ⊥-elim valid; MP preserves.
-  - `counterEnv`: the assignment `p ↦ mid, _ ↦ bot`.
-  - `peirce_h3_value`: Peirce evaluates to `mid` under `counterEnv`.
+    top under any H3 environment and any `provVal`. K, S, ⊥-elim
+    valid; MP preserves.
+  - `counterEnv`, `counterProvVal`: the assignment used for Peirce.
+  - `peirce_h3_value`: Peirce evaluates to `mid`.
   - `peirce_not_derivable_in_T₀`: corollary — `¬ Derivable₀ peirce`.
+- **`Climber/Reflection.lean`** — internal RFN(T₀) and Con(T₀).
+  - `rfn0Schema`: the Beklemishev-shape schema admitting any
+    formula of the form `prov φ → φ`.
+  - `rfn0Extension`: the SoundExtension whose certificate is
+    `soundness₀` itself — RFN(T₀) is sound iff T₀ is sound.
+  - `T₁_rfn`: T₀ extended with RFN(T₀).
+  - `consistencyFormula`: `prov ⊥ → ⊥`, i.e., Con(T₀).
+  - `T₁_rfn_derives_con`: T₁_rfn derives Con(T₀) via the RFN
+    instance at φ = ⊥.
+  - `T₁_rfn_sound`: corollary of `climb_sound`.
+  - `con_not_derivable_in_T₀`: H3 countermodel shows T₀ provably
+    cannot reach Con(T₀). The Beklemishev rung made formal.
+- **`Climber/Bedrock.lean`** — AWS Bedrock invoke wrapper for the
+  LLM proposer. Defaults to `claude-sonnet-4-6` in `us-east-1`.
+- **`Climber/Elab.lean`** — splices an LLM `(formula, proof)` pair
+  into a wrapper that constructs a `SoundExtension`, runs
+  `lake env lean --run`, classifies as `ADMITTED` (kernel checked
+  the soundness proof) or `ELAB-ERROR` (kernel refused at any
+  stage, with diagnostic).
+- **`Climber/Runner.lean`** — orchestrates the cascade. Each
+  round prompts Claude for a classical-only tautology and a
+  proof, splices into the wrapper, classifies, retries on elab
+  errors with the diagnostic fed back into the prompt.
 - **`Smoke.lean`** — `lake exe smoke`. Reports the load-bearing
   facts at runtime; the kernel did the verification at compile
   time.
+- **`BedrockSmoke.lean`** — `lake exe bedrock-smoke`. One-shot
+  Bedrock connectivity check.
+- **`RunnerMain.lean`** — `lake exe runner [N]`. Runs `N` rounds
+  of the LLM/Lean cascade (default 3). Each admitted formula
+  enters T₁ as a kernel-blessed sound axiom.
 
 ## Status
 
 - **Builds clean** on `leanprover/lean4:v4.29.1`. `lake build`
   finishes in seconds.
-- **Zero sorries.** `climb_sound`, `climb_consistent`,
-  `T₁_derives_peirce`, `T₁_sound`, `peirceSound`, `soundness₀`,
-  `Derivable₀.h3Valid`, `peirce_not_derivable_in_T₀` are all fully
-  proved.
-- **The climb crosses an unreachable line.** The countermodel
-  proves T₀ provably cannot reach Peirce; the admitted Peirce
-  extension makes T₁ derive it; `climb_sound` keeps T₁ sound.
+- **Zero sorries.** All headline results — `climb_sound`,
+  `climb_consistent`, `T₁_derives_peirce`, `T₁_sound`, `peirceSound`,
+  `soundness₀`, `Derivable₀.h3Valid`, `peirce_not_derivable_in_T₀`,
+  `T₁_rfn_derives_con`, `T₁_rfn_sound`, `con_not_derivable_in_T₀` —
+  are fully proved.
+- **The climb crosses an unreachable line, twice.** The Peirce
+  rung shows the architecture works for sound axiom-schema
+  extension. The RFN rung shows it works for *internal reflection*:
+  T₁_rfn derives Con(T₀), T₀ provably cannot.
+- **The cascade is interactive.** `lake exe runner` runs the
+  proposer/gate loop end-to-end against AWS Bedrock; the LLM
+  proposes classical-only tautologies, the kernel checks the
+  soundness proofs, T₁ accumulates kernel-blessed sound axioms
+  across rounds.
 
 ## What this demonstrates
 
@@ -96,37 +133,40 @@ across the climb.**
   navigates such hierarchies — with a proposer choosing which
   extension to add and a kernel checking the navigation step.
 
-## Path to genuine reflection-principle climbing
+## Path to iterated reflection-principle climbing
 
-The present artifact instantiates the architecture at its simplest
-mode: admit a new sound *axiom schema*. The keynote-grade story is
-the *Beklemishev-shaped* climb: at each rung, admit `RFN(T_n)`
-where `T_n` is the previous theory.
+The present artifact has the Beklemishev rung at level 1: T₁_rfn
+derives Con(T₀) via an internal RFN(T₀) schema with soundness₀ as
+the certificate. The path forward is *iteration* — admitting
+RFN(T₁_rfn) at level 2, RFN(T₂) at level 3, and so on, climbing
+through the Beklemishev hierarchy.
 
-To get there, the gaps are:
+The remaining gaps:
 
-1. **Internal provability predicate.** The current `Derivable₀` is
-   a Lean inductive `Prop` — fine for the metalanguage, but RFN(T_n)
-   in the standard sense quantifies over an *internal* `Prov_T_n`
-   predicate encoded as a formula of the object language. This
-   requires a Gödel encoding of `Derivable_n` derivations as terms.
-   ~200–400 LOC depending on how aggressively engineered.
+1. **Internal provability predicate per rung.** At level 1, the
+   `prov` constructor in `Formula` is hard-coded to T₀ via
+   `interp env (.prov φ) := Derivable₀ φ`. To climb past T₁_rfn we
+   need `prov` to be indexed by a level — `prov (n : Nat) (φ : Formula)`
+   — and the interpretation parameterized over a sequence of theories.
+   ~50 LOC of refactoring.
 
-2. **Object-language reflection schema.** Once `Prov_T_n(⌜φ⌝)` is
-   a formula, the schema `Prov_T_n(⌜φ⌝) → φ` can be admitted as a
-   `SoundExtension` whose `sound` field is the metalanguage soundness
-   theorem of T_n. This is exactly what we have now — just at the
-   internal-provability level rather than the metalanguage-level.
+2. **Soundness lemma per rung.** Each rung n+1's RFN extension
+   needs the soundness theorem of T_n. For T₀ this is `soundness₀`.
+   For T₁_rfn it's `T₁_rfn_sound` (already proved as a corollary of
+   `climb_sound`). General: each rung's soundness comes free from
+   `climb_sound` once `prov` and `interp` are level-indexed.
 
-3. **Iterating the climb.** T_2 needs `Prov_T_1`, which mentions
-   the rules admitted at rung 1. The standard Beklemishev trick —
-   stratification by formula complexity (Π_n reflection) — keeps
-   this finite at each rung.
+3. **Stratification (Π_n reflection).** The full Beklemishev
+   hierarchy stratifies reflection by formula complexity, giving
+   finite presentations at each level. Required for transfinite
+   ordinals; not required for finite-rung demos. Engineering, not
+   research.
 
-Each of these is a finite engineering task, not a research problem.
-The core architectural claim — that a kernel-checked metalanguage
-soundness certificate is the right gate for theory extension — is
-already demonstrated by `climb_sound` in the present development.
+Each of these is finite work. The architectural claim — that a
+kernel-checked metalanguage soundness certificate is the right gate
+for theory extension, including for internal reflection principles —
+is already demonstrated by `climb_sound` together with
+`T₁_rfn_derives_con` and `con_not_derivable_in_T₀`.
 
 ## Relationship to the rest of the keynote portfolio
 
@@ -158,6 +198,31 @@ lake build       # builds the library
 lake build smoke # builds the smoke executable
 lake exe smoke   # runs it
 ```
+
+## Running the cascade
+
+The LLM/Lean cascade requires the `aws` CLI on PATH with
+Bedrock-enabled credentials. With those in place:
+
+```bash
+lake exe bedrock-smoke    # one-shot connectivity check
+lake exe runner           # 3 rounds (default)
+lake exe runner 10        # 10 rounds
+```
+
+Each round, Claude proposes a classical-only tautology and a Lean
+proof of its metalanguage truth. The kernel checks the proof. On
+admission, the formula enters T₁ as a kernel-blessed sound axiom
+and is shown to Claude in subsequent rounds (de-duplication). On
+elab error, Lean's diagnostic is fed back to Claude for one retry.
+
+A typical run admits classical theorems like double-negation
+elimination `((φ → ⊥) → ⊥) → φ`, Peirce's law
+`((φ → ψ) → φ) → φ`, consequentia mirabilis
+`((φ → ⊥) → φ) → φ`. Each is a formula provably outside T₀
+(by the same H3-style countermodel `Counter.lean` constructs for
+Peirce) and inside T₁ via the admitted certificate. The cascade
+is the climb made interactive.
 
 ## References
 

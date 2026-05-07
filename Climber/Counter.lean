@@ -37,11 +37,16 @@ def imp : H3 → H3 → H3
 
 end H3
 
-/-- Interpret a formula into the 3-element Heyting algebra. -/
-def Formula.heyting (env : String → H3) : Formula → H3
+/-- Interpret a formula into the 3-element Heyting algebra. The
+    `provVal` parameter assigns an H3 value to each `prov φ` atom;
+    since T₀ has no rule for `prov`, any `provVal` makes the axiom
+    schemas of T₀ valid. -/
+def Formula.heyting (env : String → H3) (provVal : Formula → H3) :
+    Formula → H3
   | .bot     => H3.bot
   | .atom a  => env a
-  | .imp φ ψ => H3.imp (Formula.heyting env φ) (Formula.heyting env ψ)
+  | .imp φ ψ => H3.imp (heyting env provVal φ) (heyting env provVal ψ)
+  | .prov φ  => provVal φ
 
 /-- The K axiom is H3-valid. -/
 private theorem h3_K (a b : H3) : H3.imp a (H3.imp b a) = H3.top := by
@@ -62,30 +67,32 @@ private theorem h3_mp (a : H3) : H3.imp H3.top a = H3.top → a = H3.top := by
   · cases h
   · rfl
 
-/-- Validity in H3: the formula evaluates to top under every environment. -/
+/-- Validity in H3: the formula evaluates to top under every
+    environment and every `prov`-assignment. -/
 def Formula.h3Valid (φ : Formula) : Prop :=
-  ∀ env : String → H3, Formula.heyting env φ = H3.top
+  ∀ env : String → H3, ∀ provVal : Formula → H3,
+    Formula.heyting env provVal φ = H3.top
 
 /-- Every T₀-derivable formula is H3-valid. -/
 theorem Derivable₀.h3Valid {φ : Formula} (h : Derivable₀ φ) :
     Formula.h3Valid φ := by
   induction h with
   | k φ' ψ' =>
-    intro env
+    intro env provVal
     simp only [Formula.heyting]
     exact h3_K _ _
   | s φ' ψ' χ' =>
-    intro env
+    intro env provVal
     simp only [Formula.heyting]
     exact h3_S _ _ _
   | bot_e φ' =>
-    intro env
+    intro env provVal
     simp only [Formula.heyting]
     exact h3_botE _
   | mp _ _ ih₁ ih₂ =>
-    intro env
-    have h₁ := ih₁ env
-    have h₂ := ih₂ env
+    intro env provVal
+    have h₁ := ih₁ env provVal
+    have h₂ := ih₂ env provVal
     simp only [Formula.heyting] at h₁
     rw [h₂] at h₁
     exact h3_mp _ h₁
@@ -95,9 +102,13 @@ def counterEnv : String → H3
   | "p" => H3.mid
   | _   => H3.bot
 
+/-- A trivial `prov`-assignment. The Peirce demo doesn't use `prov`,
+    so any value works; we pick `bot` for definiteness. -/
+def counterProvVal : Formula → H3 := fun _ => H3.bot
+
 /-- Peirce's law over (p, q) evaluates to mid under counterEnv. -/
 theorem peirce_h3_value :
-    Formula.heyting counterEnv (peirceFormula "p" "q") = H3.mid := by
+    Formula.heyting counterEnv counterProvVal (peirceFormula "p" "q") = H3.mid := by
   simp [peirceFormula, Formula.heyting, counterEnv, H3.imp]
 
 /-- Peirce's law over (p, q) is not derivable in T₀.
@@ -108,7 +119,7 @@ theorem peirce_h3_value :
     admitted Peirce extension. -/
 theorem peirce_not_derivable_in_T₀ : ¬ Derivable₀ (peirceFormula "p" "q") := by
   intro h
-  have hval := h.h3Valid counterEnv
+  have hval := h.h3Valid counterEnv counterProvVal
   rw [peirce_h3_value] at hval
   exact H3.noConfusion hval
 
