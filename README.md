@@ -110,7 +110,7 @@ to **proof-system construction**. In the keynote portfolio:
 
 ## Status
 
-- **Builds clean** on `leanprover/lean4:v4.29.1`. `lake build`
+- **Builds clean** on `leanprover/lean4:v4.30.0`. `lake build`
   finishes in seconds.
 - **Zero sorries.** All headline results — `climb_sound`,
   `climb_consistent`, `T₁_derives_peirce`, `T₁_sound`, `peirceSound`,

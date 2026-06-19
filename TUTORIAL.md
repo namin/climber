@@ -25,7 +25,7 @@ By the end you'll be able to:
 ## Prerequisites
 
 - Lean 4 toolchain via `elan`. The artifact pins
-  `leanprover/lean4:v4.29.1` in `lean-toolchain`; first
+  `leanprover/lean4:v4.30.0` in `lean-toolchain`; first
   `lake build` will fetch it automatically.
 - (Optional, for the cascade) `aws` CLI on PATH, Bedrock-enabled
   AWS credentials in the standard chain.
